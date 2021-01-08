@@ -1,0 +1,6 @@
+(sym_lib_table
+  (lib (name MCU_Module)(type Legacy)(uri ${KIPRJMOD}/library/MCU_Module/MCU_Module.lib)(options "")(descr ""))
+  (lib (name AD9952YSVZ)(type Legacy)(uri ${KIPRJMOD}/library/AD9952YSVZ/AD9952YSVZ.lib)(options "")(descr ""))
+  (lib (name T1-1T-KK81)(type Legacy)(uri ${KIPRJMOD}/library/T1-1T-KK81/T1-1T-KK81.lib)(options "")(descr ""))
+  (lib (name R1003_Huzzah32DDS-rescue)(type Legacy)(uri ${KIPRJMOD}/R1003_Huzzah32DDS-rescue.lib)(options "")(descr ""))
+)

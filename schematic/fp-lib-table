@@ -1,0 +1,4 @@
+(fp_lib_table
+  (lib (name Module)(type KiCad)(uri ${KIPRJMOD}/library/MCU_Module/Module.pretty)(options "")(descr ""))
+  (lib (name footprints)(type KiCad)(uri ${KIPRJMOD}/library/AD9952YSVZ/footprints.pretty)(options "")(descr ""))
+)
