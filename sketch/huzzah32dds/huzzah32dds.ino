@@ -34,9 +34,13 @@ IPAddress subnet(255, 255, 255, 0);
 // MQTT topics
 const char *tpcReset     = "Huzzah32dds/Reset";
 const char *tpcSetF      = "Huzzah32dds/SetFreq";
+const char *tpcGetF      = "Huzzah32dds/GetFreq";
 const char *tpcSetPh     = "Huzzah32dds/SetPhase";
+const char *tpcGetPh     = "Huzzah32dds/GetPhase";
 const char *tpcSetRefClk = "Huzzah32dds/SetRefClk";
+const char *tpcGetRefClk = "Huzzah32dds/GetRefClk";
 const char *tpcSetMulti  = "Huzzah32dds/SetMulti";
+const char *tpcGetMulti  = "Huzzah32dds/GetMulti";
 
 // This line is here to cure a compiler error
 extern void mqtt_callback(char* topic, byte* payload, unsigned int length);
@@ -64,6 +68,7 @@ const uint8_t EE_frequency = 0;
 const uint8_t EE_phase = 4;
 const uint8_t EE_refclk = 6;
 const uint8_t EE_multi = 10;
+#define EE_size 14
 
 // SPI configuration
 const uint16_t spiClk = 1000000;         // 1 MHz
@@ -79,7 +84,7 @@ const uint8_t pinMOSI = 18;          // Pin 18  ->  GPIO 12
 const uint8_t pinMISO = 19;          // Pin 19  ->  GPIO 13
 const uint8_t pinReset = 21;         // Pin 21  ->  GPIO 16
 
-// Standard registry addresses
+// DDS standard registry addresses
 #define CFR1 0x00         // Control Function Register 1
 #define CFR2 0x01         // Control Function Register 2
 #define ASF 0x02          // Amplitude Scale Factor
@@ -108,7 +113,7 @@ void setup() {
     Serial.print("Client name generated as: ");
     Serial.println(clientName);
   }
-
+  
   // Only refresh WiFi config if SSID has changed
   if (WiFi.SSID() != ssid) {
     if (staticIP) {
@@ -116,7 +121,10 @@ void setup() {
     }
     WiFi.begin(ssid, ssidPw);
   }
-
+  
+  // Initialize EEPROM
+  EEPROM.begin(EE_size);
+  
   // Connect to WiFi and MQTT broker
   wifi_connect();
   mqtt_connect();
@@ -125,12 +133,13 @@ void setup() {
   vspi = new SPIClass(VSPI);
   vspi -> begin(pinSCLK, pinMISO, pinMOSI, pinCS);
   
-  // Reset DDS to initial state
-  //dds_reset();
-  
   // Ensure a clean power-up
   delay(250);
   
+  // Reset DDS to initial state
+  //dds_reset();
+  
+  // Load initial configuration based on saved values in EEPROM
   dds_configure();
 }
 
@@ -140,7 +149,7 @@ void setup() {
 String mac_to_str(const uint8_t *mac) {
   // Generate a client name based on MAC address
   String result;
-
+  
   for (int i = 0; i < 6; i++) {
     if ((mac[i] & 0xF0) == 0) {
       // Stop suppression of leading zero
@@ -148,12 +157,12 @@ String mac_to_str(const uint8_t *mac) {
     } else {
       result += String(mac[i], HEX);
     }
-
+    
     if (i < 5) {
       result += ':';
     }
   }
-
+  
   return result;
 }
 
@@ -236,29 +245,32 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length) {
     Serial.write(payload, length);
     Serial.println("");
   }
-
+  
   // Convert char array to a string by NULL terminating it
   payload[length] = '\0';
-
+  
   if (strcmp(topic, tpcReset) == 0) {
     dds_reset();
-    
+  
   } else if (strcmp(topic, tpcSetF) == 0) {
     uint32_t temp = atoi((char*)payload);
     dds_set_frequency(temp);
-    
+  
   } else if (strcmp(topic, tpcSetPh) == 0) {
     uint16_t temp = atoi((char*)payload);
     dds_set_phase(temp);
   
   } else if (strcmp(topic, tpcSetRefClk) == 0) {
     _refClk = atoi((char*)payload);
+    eeprom_write(EE_refclk, _refClk);
     dds_set_sysclk();
     dds_set_frequency(_frequency);
   
   } else if (strcmp(topic, tpcSetMulti) == 0) {
     uint8_t temp = atoi((char*)payload);
-    dds_set_refclk(temp);
+    dds_set_refclkmulti(temp);
+    dds_set_sysclk();
+    dds_set_frequency(_frequency);
   }
 }
 
@@ -285,25 +297,25 @@ void dds_configure() {
   // Comparator
   spi_send(CFR1, 0x40, 4);
   // SYNC_CLK output unless required. This can cause some noise in the GND plane.
-  spi_send(CFR1, 0x2, 4);
+  //spi_send(CFR1, 0x2, 4);
   
   // Read last reference clock value from EEPROM
   // Will either be 20.0 or 99.98... MHz
-  _refClk = eeprom_read(EE_refclk, 4);
+  _refClk = eeprom_read(EE_refclk, _refClk);
   
   // Read last refrence clock multiplier from EEPROM and send to DDS
-  _refClkMulti = eeprom_read(EE_multi, 1);
-  dds_set_refclk(_refClkMulti);
+  _refClkMulti = eeprom_read(EE_multi, _refClkMulti);
+  dds_set_refclkmulti(_refClkMulti);
   
   // Update system clock
   dds_set_sysclk();
   
   // Read last frequency from EEPROM and send to DDS
-  _frequency = eeprom_read(EE_frequency, 4);
+  _frequency = eeprom_read(EE_frequency, _frequency);
   dds_set_frequency(_frequency);
   
   // Read last phase offset from EEPROM and send to DDS
-  _phase = eeprom_read(EE_phase, 2);
+  _phase = eeprom_read(EE_phase, _phase);
   dds_set_phase(_phase);
 }
 
@@ -314,12 +326,12 @@ void dds_update_registers() {
   pulseHigh(pinIOupdate);
 }
 
-void dds_set_refclk(uint32_t multi) {
+void dds_set_refclkmulti(uint8_t multi) {
   // Set the reference clock multiplier
-  // 0000 0001   or   0x01
-  // 0000 0000 0000 0000 *0000 0*000
   // Bits [7:3] 0x04 to 0x14 for 4x to 20x multiplication
+  // 0000 0000 0000 0000 *0000 0*000
   
+  // Examples:
   // 4x:  0000 0000 0000 0000 0010 0000
   // 5x:  0000 0000 0000 0000 0010 1000
   // 6x:  0000 0000 0000 0000 0011 0000
@@ -327,22 +339,22 @@ void dds_set_refclk(uint32_t multi) {
   
   multi = constrain(multi, clkMultiMin, clkMultiMax);
   
+  // Save reference clock multiplier to EEPROM if it has changed
+  if (_refClkMulti != multi) {
+    eeprom_write(EE_multi, multi);
+    _refClkMulti = multi;
+  }
+  
   if (serial) {
     Serial.print("Setting REF CLK multiplier to: ");
     Serial.println(multi);
   }
   
-  // Save reference clock multiplier to EEPROM if it has changed
-  if (_refClkMulti != multi) {
-    eeprom_write(EE_multi, multi, 1);
-    _refClkMulti = multi;
-  }
-  
   // Shift multiplier bits to their correct position
-  multi = multi << 3;
+  multi = (uint32_t)multi << 3;
   
   // Set the VCO control bit depending on frequency range
-  // bit 2 should be 0 for f_sysclk = 0 to 250 MHz and 1 for f_sysclk = 250 to 400 MHz.
+  // Bit 2 should be 0 for f_sysclk = 0 to 250 MHz and 1 for f_sysclk = 250 to 400 MHz.
   multi = multi ^ (uint32_t)0x4;
   spi_send(CFR2, multi, 3);
 }
@@ -357,7 +369,6 @@ uint32_t dds_get_ftw(uint32_t frequency) {
   // FTW = (f_output * 2e32) / f_sysclk  for 0 <= FTW <= 2e31
   // FTW = (1 - (f_output / f_sysclk)) * 2e32  for 2e31 < FTW < 2e32-1
   
-  //return frequency * (0xFFFFFFFF / 400000000.);
   return frequency * (0xFFFFFFFF / _sysClk);
 }
 
@@ -367,7 +378,7 @@ void dds_set_frequency(uint32_t frequency) {
   
   // Save frequency to EEPROM if it has changed
   if (_frequency != frequency) {
-    eeprom_write(EE_frequency, frequency, 4);
+    eeprom_write(EE_frequency, frequency);
     _frequency = frequency;
   }
   
@@ -378,6 +389,8 @@ void dds_set_frequency(uint32_t frequency) {
     Serial.println(frequency);
     Serial.print("Frequency tuning word: ");
     Serial.println(ftw0);
+    Serial.print("System clock [Hz]: ");
+    Serial.println(_sysClk); 
   }
   
   spi_send(FTW0, ftw0, 4);
@@ -388,7 +401,6 @@ uint16_t dds_get_pow(uint16_t phase) {
   // POW = (ph_offset / 360) * 2e14
   
   return (phase / 360.) * 0x4000;
-  // either 360 or phase as a float
 }
 
 void dds_set_phase(uint16_t phase) {
@@ -397,7 +409,7 @@ void dds_set_phase(uint16_t phase) {
   
   // Save phase offset to EEPROM if it has changed
   if (_phase != phase) {
-    eeprom_write(EE_phase, phase, 2);
+    eeprom_write(EE_phase, phase);
     _phase = phase;
   }
   
@@ -433,13 +445,13 @@ void spi_send(uint8_t instr, uint32_t data, uint8_t bytes) {
     uint8_t payload = (data >> b*8) & 0xFF;
     if (serial) {
       Serial.println(payload);
-    } 
+    }
     vspi -> transfer(payload);
   }
   
   vspi -> endTransaction();
-
-  // Update DDS internal registers
+  
+  // Update DDS internal registers;
   dds_update_registers();
 }
 
@@ -450,41 +462,85 @@ void spi_receive() {
 
 // ----------- EEPROM routines
 
-uint32_t eeprom_read(uint8_t address, uint8_t bytes) {
-  uint32_t value = 0;
-  for (uint8_t i = 0; i < bytes; i++) {
-    value = value | EEPROM.read(address);
-    if (i < bytes - 1) {
-      value = value << 8;
-      address += 1;
-    }
-  }
+uint8_t eeprom_read(uint8_t address, uint8_t type) {
+  // Read a 8 bit value from the EEPROM
+  uint8_t value = EEPROM.get(address, type);
   
   if (serial) {
-    Serial.print("Read: ");
+    Serial.print("Reading from 8 bit address: ");
+    Serial.println(address);
+    Serial.print("Value: ");
     Serial.println(value);
-    Serial.print("From address: ");
-    Serial.println(address - 1);
   }
   
   return value;
 }
 
-void eeprom_write(uint8_t address, uint32_t value, uint8_t bytes) {
+uint16_t eeprom_read(uint8_t address, uint16_t type) {
+  // Read a 16 bit value from the EEPROM
+  uint16_t value = EEPROM.get(address, type);
+  
   if (serial) {
-    Serial.print("Saving: ");
-    Serial.println(value);
-    Serial.print("To address: ");
+    Serial.print("Reading from 16 bit address: ");
     Serial.println(address);
+    Serial.print("Value: ");
+    Serial.println(value);
   }
   
-  address += bytes;
-  for (uint8_t i = 0; i < bytes; i++) {
-    byte toSave = value & 0xFF;
-    EEPROM.write(address, toSave);
-    value = value >> 8;
-    address -= 1;
+  return value;
+}
+
+uint32_t eeprom_read(uint8_t address, uint32_t type) {
+  // Read a 32 bit value from the EEPROM
+  uint32_t value = EEPROM.get(address, type);
+  
+  if (serial) {
+    Serial.print("Reading from 32 bit address: ");
+    Serial.println(address);
+    Serial.print("Value: ");
+    Serial.println(value);
   }
+  
+  return value;
+}
+
+void eeprom_write(uint8_t address, uint8_t value) {
+  // Save a 8 bit value to the EEPROM
+  if (serial) {
+    Serial.print("Saving to 8 bit address: ");
+    Serial.println(address);
+    Serial.print("Value: ");
+    Serial.println(value);
+  }
+  
+  EEPROM.put(address, value);
+  EEPROM.commit();
+}
+
+void eeprom_write(uint8_t address, uint16_t value) {
+  // Save a 16 bit value to the EEPROM
+  if (serial) {
+    Serial.print("Saving to 16 bit address: ");
+    Serial.println(address);
+    Serial.print("Value: ");
+    Serial.println(value);
+  }
+  
+  EEPROM.put(address, value);
+  EEPROM.commit();
+}
+
+void eeprom_write(uint8_t address, uint32_t value) {
+  // Save a 32 bit value to the EEPROM
+  if (serial) {
+    Serial.print("Saving to 32 bit address: ");
+    Serial.println(address);
+    Serial.print("Value: ");
+    Serial.println(value);
+  }
+  
+  EEPROM.put(address, value);
+  EEPROM.commit();
 }
 
 
