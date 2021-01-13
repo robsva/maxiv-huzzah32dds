@@ -76,7 +76,7 @@ SPIClass * vspi = NULL;                  // Uninitalised pointer to SPI object
 
 // Pin definitions
 #define pulseHigh(pin) {digitalWrite(pin, HIGH); delayMicroseconds(30); digitalWrite(pin, LOW);}
-const uint8_t pinLED = 13;
+const uint8_t pinLED = 13;           // On-board LED
 const uint8_t pinIOupdate = 4;       // Pin 4   ->  GPIO 10
 const uint8_t pinCS = 2;             // Pin 2   ->  GPIO NA
 const uint8_t pinSCLK = 5;           // Pin 5   ->  GPIO 11
@@ -105,6 +105,25 @@ void setup() {
   pinMode(pinReset, OUTPUT);
   digitalWrite(pinReset, LOW);
   
+  // Initialize EEPROM
+  EEPROM.begin(EE_size);
+  
+  // Initialize SPI instance
+  vspi = new SPIClass(VSPI);
+  vspi -> begin(pinSCLK, pinMISO, pinMOSI, pinCS);
+  
+  // Ensure a clean power-up
+  delay(250);
+  
+  // Setup Huzzah32 in case of a new unconfigured unit
+  //dds_setup();
+  
+  // Reset DDS to initial state
+  //dds_reset();
+  
+  // Load initial configuration based on saved values in EEPROM
+  dds_configure();
+  
   // Generate client name based on MAC address
   uint8_t mac[6];
   WiFi.macAddress(mac);
@@ -122,25 +141,9 @@ void setup() {
     WiFi.begin(ssid, ssidPw);
   }
   
-  // Initialize EEPROM
-  EEPROM.begin(EE_size);
-  
   // Connect to WiFi and MQTT broker
   wifi_connect();
   mqtt_connect();
-  
-  // Initialize SPI instance
-  vspi = new SPIClass(VSPI);
-  vspi -> begin(pinSCLK, pinMISO, pinMOSI, pinCS);
-  
-  // Ensure a clean power-up
-  delay(250);
-  
-  // Reset DDS to initial state
-  //dds_reset();
-  
-  // Load initial configuration based on saved values in EEPROM
-  dds_configure();
 }
 
 
@@ -281,6 +284,19 @@ void mqtt_publish() {
 
 // ----------- DDS routines
 
+void dds_setup() {
+  // Only needed in case of a non-configured Huzzah32
+  _refClk = 20000000;
+  eeprom_write(EE_refclk, _refClk);
+  uint8_t temp1 = 20;
+  dds_set_refclkmulti(temp1);
+  dds_set_sysclk();
+  uint32_t temp2 = 38000000;
+  dds_set_frequency(temp2);
+  uint16_t temp3 = 0;
+  dds_set_phase(temp3);
+}
+
 void dds_reset() {
   // Reset the DDS to default settings
   pulseHigh(pinReset);
@@ -297,7 +313,7 @@ void dds_configure() {
   // Comparator
   spi_send(CFR1, 0x40, 4);
   // SYNC_CLK output unless required. This can cause some noise in the GND plane.
-  //spi_send(CFR1, 0x2, 4);
+  spi_send(CFR1, 0x2, 4);
   
   // Read last reference clock value from EEPROM
   // Will either be 20.0 or 99.98... MHz
